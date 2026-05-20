@@ -152,13 +152,21 @@ function createAutoContinueDelayRangeValue(
   };
 }
 
+function normalizeLastValidAutoContinueDelayConfig(): CodeModeAutoContinueDelayValue {
+  const fallback = parseCodeModeAutoContinueDelayConfig(lastValidAutoContinueDelayText);
+  if (!fallback.ok) return DEFAULT_AUTO_CONTINUE_DELAY_SECONDS;
+  if (fallback.mode === "range") {
+    return createAutoContinueDelayRangeValue(fallback);
+  }
+  return rememberResolvedAutoContinueDelay(fallback.seconds);
+}
+
 export function normalizeCodeModeAutoContinueDelaySeconds(
   value: unknown,
 ): CodeModeAutoContinueDelayValue {
   const parsed = parseCodeModeAutoContinueDelayConfig(value);
   if (!parsed.ok) {
-    lastValidAutoContinueDelayText = DEFAULT_AUTO_CONTINUE_DELAY_TEXT;
-    return DEFAULT_AUTO_CONTINUE_DELAY_SECONDS;
+    return normalizeLastValidAutoContinueDelayConfig();
   }
 
   lastValidAutoContinueDelayText = parsed.text;
