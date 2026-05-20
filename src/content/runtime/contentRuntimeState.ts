@@ -63,6 +63,7 @@ let statusCountdownDeadline = 0;
 let statusCountdownStartedAt = 0;
 let statusCountdownDelayText = "";
 let delayUiEnhancementsInstalled = false;
+let activeRuntimeState: { codeMode: { detailText: string } } | null = null;
 
 function formatDelayNumber(value: number) {
   if (!Number.isFinite(value)) return "";
@@ -233,20 +234,41 @@ function resetStatusCountdownState() {
   statusCountdownDelayText = "";
 }
 
-function updateAutoContinueStatusCountdown() {
+function getAutoContinueStatusCountdownDetailText(now = Date.now()) {
+  if (!statusCountdownStartedAt || !statusCountdownDelayText) return "";
+  const elapsedSeconds = Math.floor((now - statusCountdownStartedAt) / 1000);
+  return `已生成续发内容，${statusCountdownDelayText} 秒后发送，已用时 ${formatElapsedClock(
+    elapsedSeconds,
+  )}`;
+}
+
+function renderAutoContinueStatusCountdownText(now = Date.now()) {
   const nodes = getStatusCountdownNodes();
-  if (!nodes || !statusCountdownDeadline || !statusCountdownStartedAt) {
+  if (!nodes || !statusCountdownDeadline || !statusCountdownStartedAt) return false;
+  const detailText = getAutoContinueStatusCountdownDetailText(now);
+  if (!detailText) return false;
+  if (activeRuntimeState?.codeMode) {
+    activeRuntimeState.codeMode.detailText = detailText;
+  }
+  if (nodes.detail.textContent !== detailText) {
+    nodes.detail.textContent = detailText;
+  }
+  nodes.detail.style.display = "block";
+  return true;
+}
+
+function updateAutoContinueStatusCountdown() {
+  if (!statusCountdownDeadline || !statusCountdownStartedAt) {
     resetStatusCountdownState();
     return;
   }
 
   const now = Date.now();
   const remainingMs = Math.max(0, statusCountdownDeadline - now);
-  const elapsedSeconds = Math.floor((now - statusCountdownStartedAt) / 1000);
-  nodes.detail.textContent = `已生成续发内容，${statusCountdownDelayText} 秒后发送，已用时 ${formatElapsedClock(
-    elapsedSeconds,
-  )}`;
-  nodes.detail.style.display = "block";
+  if (!renderAutoContinueStatusCountdownText(now)) {
+    resetStatusCountdownState();
+    return;
+  }
 
   if (remainingMs <= 0) {
     resetStatusCountdownState();
@@ -273,7 +295,10 @@ function resolveStatusCountdownDelayMs(detailText: string) {
 }
 
 function maybeStartAutoContinueStatusCountdown() {
-  if (statusCountdownTimerId) return;
+  if (statusCountdownTimerId) {
+    renderAutoContinueStatusCountdownText();
+    return;
+  }
   const nodes = getStatusCountdownNodes();
   if (!nodes) return;
   const detailText = String(nodes.detail.textContent || "");
@@ -369,7 +394,7 @@ function installAutoContinueDelayUiEnhancements() {
 installAutoContinueDelayUiEnhancements();
 
 export function createContentRuntimeState() {
-  return {
+  const state = {
     isEnabled: true,
     isTabEnabled: true,
     uiTheme: "dark" as "dark" | "light",
@@ -504,6 +529,8 @@ export function createContentRuntimeState() {
       },
     },
   };
+  activeRuntimeState = state;
+  return state;
 }
 
 export type ContentRuntimeState = ReturnType<typeof createContentRuntimeState>;
