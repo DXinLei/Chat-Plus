@@ -240,7 +240,6 @@ function updateAutoContinueStatusCountdown() {
     return;
   }
 
-  clearStatusCountdownTimer();
   const now = Date.now();
   const remainingMs = Math.max(0, statusCountdownDeadline - now);
   const elapsedSeconds = Math.floor((now - statusCountdownStartedAt) / 1000);
@@ -254,6 +253,7 @@ function updateAutoContinueStatusCountdown() {
     return;
   }
 
+  clearStatusCountdownTimer();
   statusCountdownTimerId = window.setTimeout(updateAutoContinueStatusCountdown, 1000);
 }
 
@@ -273,10 +273,7 @@ function resolveStatusCountdownDelayMs(detailText: string) {
 }
 
 function maybeStartAutoContinueStatusCountdown() {
-  if (statusCountdownTimerId) {
-    updateAutoContinueStatusCountdown();
-    return;
-  }
+  if (statusCountdownTimerId) return;
   const nodes = getStatusCountdownNodes();
   if (!nodes) return;
   const detailText = String(nodes.detail.textContent || "");
@@ -358,7 +355,6 @@ function installAutoContinueDelayUiEnhancements() {
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
-      characterData: true,
     });
     window.setInterval(syncAutoContinueDelayUi, 400);
   };
