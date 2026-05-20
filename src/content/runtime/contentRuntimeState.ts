@@ -150,6 +150,15 @@ function rememberResolvedAutoContinueDelay(seconds: number) {
   return seconds;
 }
 
+function shouldResolveRandomAutoContinueDelayFromStack() {
+  try {
+    const stack = String(new Error().stack || "");
+    return stack.includes("getAutoContinueDelayMs") || stack.includes("waitForAutoContinueDelay");
+  } catch {
+    return false;
+  }
+}
+
 function createAutoContinueDelayRangeValue(
   parsed: Extract<ParsedCodeModeAutoContinueDelayConfig, { ok: true; mode: "range" }>,
 ): CodeModeAutoContinueDelayRangeValue {
@@ -158,9 +167,12 @@ function createAutoContinueDelayRangeValue(
     configText: parsed.text,
     min: parsed.min,
     max: parsed.max,
-    valueOf: () => rememberResolvedAutoContinueDelay(
-      parsed.min + Math.random() * (parsed.max - parsed.min),
-    ),
+    valueOf: () => {
+      if (!shouldResolveRandomAutoContinueDelayFromStack()) {
+        return parsed.min;
+      }
+      return rememberResolvedAutoContinueDelay(parsed.min + Math.random() * (parsed.max - parsed.min));
+    },
     toString: () => parsed.text,
   };
 }
@@ -228,6 +240,7 @@ function updateAutoContinueStatusCountdown() {
     return;
   }
 
+  clearStatusCountdownTimer();
   const now = Date.now();
   const remainingMs = Math.max(0, statusCountdownDeadline - now);
   const elapsedSeconds = Math.floor((now - statusCountdownStartedAt) / 1000);
@@ -260,7 +273,10 @@ function resolveStatusCountdownDelayMs(detailText: string) {
 }
 
 function maybeStartAutoContinueStatusCountdown() {
-  if (statusCountdownTimerId) return;
+  if (statusCountdownTimerId) {
+    updateAutoContinueStatusCountdown();
+    return;
+  }
   const nodes = getStatusCountdownNodes();
   if (!nodes) return;
   const detailText = String(nodes.detail.textContent || "");
