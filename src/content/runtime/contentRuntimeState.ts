@@ -60,12 +60,25 @@ let lastResolvedAutoContinueDelayMs = DEFAULT_AUTO_CONTINUE_DELAY_SECONDS * 1000
 let lastResolvedAutoContinueDelayAt = 0;
 let statusCountdownTimerId = 0;
 let statusCountdownDeadline = 0;
+let statusCountdownStartedAt = 0;
+let statusCountdownDelayText = "";
 let delayUiEnhancementsInstalled = false;
 
 function formatDelayNumber(value: number) {
   if (!Number.isFinite(value)) return "";
   if (Number.isInteger(value)) return String(value);
   return String(Number.parseFloat(value.toFixed(3)));
+}
+
+function formatDelayMs(delayMs: number) {
+  return formatDelayNumber(Math.max(0, delayMs) / 1000) || "0";
+}
+
+function formatElapsedClock(totalSeconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function parseDelayNumber(value: unknown) {
@@ -183,12 +196,6 @@ export function stringifyCodeModeAutoContinueDelayConfig(value: unknown) {
   return lastValidAutoContinueDelayText;
 }
 
-function isRangeOrDecimalDelayConfig() {
-  const parsed = parseCodeModeAutoContinueDelayConfig(lastValidAutoContinueDelayText);
-  if (!parsed.ok) return false;
-  return parsed.mode === "range" || !Number.isInteger(parsed.seconds);
-}
-
 function getStatusCountdownNodes() {
   if (typeof document === "undefined") return null;
   const root = document.getElementById(CODE_MODE_STATUS_BAR_ID) as HTMLDivElement | null;
@@ -200,59 +207,71 @@ function getStatusCountdownNodes() {
   return { root, detail };
 }
 
-function formatRemainingDelaySeconds(remainingMs: number) {
-  const seconds = Math.max(0, remainingMs / 1000);
-  if (isRangeOrDecimalDelayConfig()) {
-    return seconds.toFixed(1);
+function clearStatusCountdownTimer() {
+  if (statusCountdownTimerId) {
+    window.clearTimeout(statusCountdownTimerId);
+    statusCountdownTimerId = 0;
   }
-  return String(Math.ceil(seconds));
 }
 
-function clearStatusCountdownTimer() {
-  if (!statusCountdownTimerId) return;
-  window.clearTimeout(statusCountdownTimerId);
-  statusCountdownTimerId = 0;
+function resetStatusCountdownState() {
+  clearStatusCountdownTimer();
+  statusCountdownDeadline = 0;
+  statusCountdownStartedAt = 0;
+  statusCountdownDelayText = "";
 }
 
 function updateAutoContinueStatusCountdown() {
   const nodes = getStatusCountdownNodes();
-  if (!nodes || !statusCountdownDeadline) {
-    clearStatusCountdownTimer();
-    statusCountdownDeadline = 0;
+  if (!nodes || !statusCountdownDeadline || !statusCountdownStartedAt) {
+    resetStatusCountdownState();
     return;
   }
 
-  const remainingMs = Math.max(0, statusCountdownDeadline - Date.now());
-  nodes.detail.textContent = `已生成续发内容，${formatRemainingDelaySeconds(remainingMs)} 秒后发送`;
+  const now = Date.now();
+  const remainingMs = Math.max(0, statusCountdownDeadline - now);
+  const elapsedSeconds = Math.floor((now - statusCountdownStartedAt) / 1000);
+  nodes.detail.textContent = `已生成续发内容，${statusCountdownDelayText} 秒后发送，已用时 ${formatElapsedClock(
+    elapsedSeconds,
+  )}`;
   nodes.detail.style.display = "block";
 
   if (remainingMs <= 0) {
-    clearStatusCountdownTimer();
-    statusCountdownDeadline = 0;
+    resetStatusCountdownState();
     return;
   }
 
-  statusCountdownTimerId = window.setTimeout(updateAutoContinueStatusCountdown, 200);
+  statusCountdownTimerId = window.setTimeout(updateAutoContinueStatusCountdown, 1000);
+}
+
+function resolveStatusCountdownDelayMs(detailText: string) {
+  const hasFreshResolvedDelay = Date.now() - Number(lastResolvedAutoContinueDelayAt || 0) < 2500;
+  if (hasFreshResolvedDelay) {
+    return Math.max(0, lastResolvedAutoContinueDelayMs);
+  }
+
+  const parsed = parseCodeModeAutoContinueDelayConfig(lastValidAutoContinueDelayText);
+  if (parsed.ok && parsed.mode === "fixed") {
+    return Math.max(0, parsed.seconds * 1000);
+  }
+
+  const fallbackMatch = detailText.match(/([0-9]+(?:\.[0-9]+)?)\s*秒后发送/);
+  return fallbackMatch ? Math.max(0, Number(fallbackMatch[1]) * 1000) : 0;
 }
 
 function maybeStartAutoContinueStatusCountdown() {
+  if (statusCountdownTimerId) return;
   const nodes = getStatusCountdownNodes();
   if (!nodes) return;
   const detailText = String(nodes.detail.textContent || "");
   if (!detailText.includes("已生成续发内容") || !detailText.includes("秒后发送")) return;
 
-  const hasFreshResolvedDelay = Date.now() - Number(lastResolvedAutoContinueDelayAt || 0) < 2500;
-  const fallbackMatch = detailText.match(/([0-9]+(?:\.[0-9]+)?)\s*秒后发送/);
-  const fallbackDelayMs = fallbackMatch ? Number(fallbackMatch[1]) * 1000 : 0;
-  const delayMs = hasFreshResolvedDelay
-    ? lastResolvedAutoContinueDelayMs
-    : Math.max(0, fallbackDelayMs);
+  const delayMs = resolveStatusCountdownDelayMs(detailText);
   if (!Number.isFinite(delayMs) || delayMs <= 0) return;
 
-  const nextDeadline = Date.now() + delayMs;
-  if (statusCountdownTimerId && Math.abs(nextDeadline - statusCountdownDeadline) < 250) return;
-  clearStatusCountdownTimer();
-  statusCountdownDeadline = nextDeadline;
+  statusCountdownStartedAt = Date.now();
+  statusCountdownDeadline = statusCountdownStartedAt + delayMs;
+  statusCountdownDelayText = formatDelayMs(delayMs);
   updateAutoContinueStatusCountdown();
 }
 
