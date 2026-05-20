@@ -19,16 +19,315 @@ export const SYSTEM_INJECTION_WIDGET_ID = "chat-plus-system-injection-widget";
 export const SYSTEM_INJECTION_WIDGET_POSITION_STORAGE_KEY =
   "chat-plus-system-injection-widget-position";
 
-export function normalizeCodeModeAutoContinueDelaySeconds(value: unknown) {
-  if (value == null || String(value).trim() === "") {
-    return 5;
-  }
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return 5;
-  }
-  return Math.max(0, Math.floor(parsed));
+type CodeModeAutoContinueDelayRangeValue = {
+  readonly __chatPlusAutoContinueDelayRange: true;
+  readonly configText: string;
+  readonly min: number;
+  readonly max: number;
+  valueOf: () => number;
+  toString: () => string;
+};
+
+export type CodeModeAutoContinueDelayValue = number | CodeModeAutoContinueDelayRangeValue;
+
+export type ParsedCodeModeAutoContinueDelayConfig =
+  | {
+      ok: true;
+      mode: "fixed";
+      text: string;
+      seconds: number;
+      min: number;
+      max: number;
+    }
+  | {
+      ok: true;
+      mode: "range";
+      text: string;
+      seconds: number;
+      min: number;
+      max: number;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+const DEFAULT_AUTO_CONTINUE_DELAY_SECONDS = 5;
+const DEFAULT_AUTO_CONTINUE_DELAY_TEXT = String(DEFAULT_AUTO_CONTINUE_DELAY_SECONDS);
+const AUTO_CONTINUE_DELAY_STATUS_TEXT = "等待自动发送";
+let lastValidAutoContinueDelayText = DEFAULT_AUTO_CONTINUE_DELAY_TEXT;
+let lastResolvedAutoContinueDelayMs = DEFAULT_AUTO_CONTINUE_DELAY_SECONDS * 1000;
+let lastResolvedAutoContinueDelayAt = 0;
+let statusCountdownTimerId = 0;
+let statusCountdownDeadline = 0;
+let delayUiEnhancementsInstalled = false;
+
+function formatDelayNumber(value: number) {
+  if (!Number.isFinite(value)) return "";
+  if (Number.isInteger(value)) return String(value);
+  return String(Number.parseFloat(value.toFixed(3)));
 }
+
+function parseDelayNumber(value: unknown) {
+  const normalized = String(value ?? "").trim();
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+export function parseCodeModeAutoContinueDelayConfig(
+  value: unknown,
+): ParsedCodeModeAutoContinueDelayConfig {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) {
+      return { ok: false, error: "自动发送延迟必须大于等于 0" };
+    }
+    const seconds = Math.max(0, value);
+    const text = formatDelayNumber(seconds) || DEFAULT_AUTO_CONTINUE_DELAY_TEXT;
+    return { ok: true, mode: "fixed", text, seconds, min: seconds, max: seconds };
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    (value as CodeModeAutoContinueDelayRangeValue).__chatPlusAutoContinueDelayRange
+  ) {
+    return parseCodeModeAutoContinueDelayConfig(
+      (value as CodeModeAutoContinueDelayRangeValue).configText,
+    );
+  }
+
+  const normalized = String(value ?? "").trim().replace(/，/g, ",");
+  if (!normalized) {
+    return { ok: false, error: "自动发送延迟不能为空" };
+  }
+
+  if (normalized.includes(",")) {
+    const parts = normalized.split(",").map((part) => part.trim());
+    if (parts.length !== 2) {
+      return { ok: false, error: "随机延迟格式应为：最小秒数,最大秒数" };
+    }
+
+    const min = parseDelayNumber(parts[0]);
+    const max = parseDelayNumber(parts[1]);
+    if (min === null || max === null) {
+      return { ok: false, error: "随机延迟只能填写数字" };
+    }
+    if (min >= max) {
+      return { ok: false, error: "随机延迟必须满足第一个数小于第二个数" };
+    }
+
+    const text = `${formatDelayNumber(min)},${formatDelayNumber(max)}`;
+    return { ok: true, mode: "range", text, seconds: min, min, max };
+  }
+
+  const seconds = parseDelayNumber(normalized);
+  if (seconds === null) {
+    return { ok: false, error: "自动发送延迟只能填写数字，或填写 5,9 这样的随机范围" };
+  }
+
+  const text = formatDelayNumber(seconds) || DEFAULT_AUTO_CONTINUE_DELAY_TEXT;
+  return { ok: true, mode: "fixed", text, seconds, min: seconds, max: seconds };
+}
+
+function rememberResolvedAutoContinueDelay(seconds: number) {
+  lastResolvedAutoContinueDelayMs = Math.max(0, seconds * 1000);
+  lastResolvedAutoContinueDelayAt = Date.now();
+  return seconds;
+}
+
+function createAutoContinueDelayRangeValue(
+  parsed: Extract<ParsedCodeModeAutoContinueDelayConfig, { ok: true; mode: "range" }>,
+): CodeModeAutoContinueDelayRangeValue {
+  return {
+    __chatPlusAutoContinueDelayRange: true,
+    configText: parsed.text,
+    min: parsed.min,
+    max: parsed.max,
+    valueOf: () => rememberResolvedAutoContinueDelay(
+      parsed.min + Math.random() * (parsed.max - parsed.min),
+    ),
+    toString: () => parsed.text,
+  };
+}
+
+export function normalizeCodeModeAutoContinueDelaySeconds(
+  value: unknown,
+): CodeModeAutoContinueDelayValue {
+  const parsed = parseCodeModeAutoContinueDelayConfig(value);
+  if (!parsed.ok) {
+    lastValidAutoContinueDelayText = DEFAULT_AUTO_CONTINUE_DELAY_TEXT;
+    return DEFAULT_AUTO_CONTINUE_DELAY_SECONDS;
+  }
+
+  lastValidAutoContinueDelayText = parsed.text;
+  if (parsed.mode === "range") {
+    return createAutoContinueDelayRangeValue(parsed);
+  }
+
+  return rememberResolvedAutoContinueDelay(parsed.seconds);
+}
+
+export function stringifyCodeModeAutoContinueDelayConfig(value: unknown) {
+  const parsed = parseCodeModeAutoContinueDelayConfig(value);
+  if (parsed.ok) return parsed.text;
+  return lastValidAutoContinueDelayText;
+}
+
+function isRangeOrDecimalDelayConfig() {
+  const parsed = parseCodeModeAutoContinueDelayConfig(lastValidAutoContinueDelayText);
+  if (!parsed.ok) return false;
+  return parsed.mode === "range" || !Number.isInteger(parsed.seconds);
+}
+
+function getStatusCountdownNodes() {
+  if (typeof document === "undefined") return null;
+  const root = document.getElementById(CODE_MODE_STATUS_BAR_ID) as HTMLDivElement | null;
+  if (!root?.isConnected || root.style.display === "none") return null;
+  const title = root.querySelector("[data-role='title']") as HTMLDivElement | null;
+  const detail = root.querySelector("[data-role='detail']") as HTMLDivElement | null;
+  if (!title || !detail) return null;
+  if (String(title.textContent || "").trim() !== AUTO_CONTINUE_DELAY_STATUS_TEXT) return null;
+  return { root, detail };
+}
+
+function formatRemainingDelaySeconds(remainingMs: number) {
+  const seconds = Math.max(0, remainingMs / 1000);
+  if (isRangeOrDecimalDelayConfig()) {
+    return seconds.toFixed(1);
+  }
+  return String(Math.ceil(seconds));
+}
+
+function clearStatusCountdownTimer() {
+  if (!statusCountdownTimerId) return;
+  window.clearTimeout(statusCountdownTimerId);
+  statusCountdownTimerId = 0;
+}
+
+function updateAutoContinueStatusCountdown() {
+  const nodes = getStatusCountdownNodes();
+  if (!nodes || !statusCountdownDeadline) {
+    clearStatusCountdownTimer();
+    statusCountdownDeadline = 0;
+    return;
+  }
+
+  const remainingMs = Math.max(0, statusCountdownDeadline - Date.now());
+  nodes.detail.textContent = `已生成续发内容，${formatRemainingDelaySeconds(remainingMs)} 秒后发送`;
+  nodes.detail.style.display = "block";
+
+  if (remainingMs <= 0) {
+    clearStatusCountdownTimer();
+    statusCountdownDeadline = 0;
+    return;
+  }
+
+  statusCountdownTimerId = window.setTimeout(updateAutoContinueStatusCountdown, 200);
+}
+
+function maybeStartAutoContinueStatusCountdown() {
+  const nodes = getStatusCountdownNodes();
+  if (!nodes) return;
+  const detailText = String(nodes.detail.textContent || "");
+  if (!detailText.includes("已生成续发内容") || !detailText.includes("秒后发送")) return;
+
+  const hasFreshResolvedDelay = Date.now() - Number(lastResolvedAutoContinueDelayAt || 0) < 2500;
+  const fallbackMatch = detailText.match(/([0-9]+(?:\.[0-9]+)?)\s*秒后发送/);
+  const fallbackDelayMs = fallbackMatch ? Number(fallbackMatch[1]) * 1000 : 0;
+  const delayMs = hasFreshResolvedDelay
+    ? lastResolvedAutoContinueDelayMs
+    : Math.max(0, fallbackDelayMs);
+  if (!Number.isFinite(delayMs) || delayMs <= 0) return;
+
+  const nextDeadline = Date.now() + delayMs;
+  if (statusCountdownTimerId && Math.abs(nextDeadline - statusCountdownDeadline) < 250) return;
+  clearStatusCountdownTimer();
+  statusCountdownDeadline = nextDeadline;
+  updateAutoContinueStatusCountdown();
+}
+
+function normalizeAutoContinueDelayInputElement(input: HTMLInputElement) {
+  const parsed = parseCodeModeAutoContinueDelayConfig(input.value);
+  if (parsed.ok) {
+    lastValidAutoContinueDelayText = parsed.text;
+    input.value = parsed.text;
+    input.title = "固定延迟：5；随机延迟：5,9。随机范围必须满足第一个数小于第二个数。";
+    return true;
+  }
+
+  input.value = lastValidAutoContinueDelayText;
+  input.title = `${parsed.error}。已恢复为上一次有效设置：${lastValidAutoContinueDelayText}`;
+  return false;
+}
+
+function syncAutoContinueDelayInputElement(input: HTMLInputElement) {
+  if (input.type !== "text") input.type = "text";
+  input.inputMode = "decimal";
+  input.removeAttribute("step");
+  input.setAttribute("pattern", "[0-9]+([.][0-9]+)?([,，][0-9]+([.][0-9]+)?)?");
+  input.setAttribute("aria-label", "自动发送延迟，支持固定秒数或随机范围");
+  input.title = "固定延迟：5；随机延迟：5,9。随机范围必须满足第一个数小于第二个数。";
+
+  if (input.dataset.chatPlusDelayConfigBound !== "1") {
+    input.dataset.chatPlusDelayConfigBound = "1";
+    input.addEventListener(
+      "blur",
+      () => {
+        normalizeAutoContinueDelayInputElement(input);
+      },
+      true,
+    );
+    input.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key !== "Enter") return;
+        normalizeAutoContinueDelayInputElement(input);
+      },
+      true,
+    );
+  }
+
+  if (document.activeElement !== input && input.value !== lastValidAutoContinueDelayText) {
+    input.value = lastValidAutoContinueDelayText;
+  }
+}
+
+function syncAutoContinueDelayUi() {
+  if (typeof document === "undefined") return;
+  document
+    .querySelectorAll<HTMLInputElement>(
+      `#${SYSTEM_INJECTION_WIDGET_ID} [data-role='auto-continue-delay-input']`,
+    )
+    .forEach(syncAutoContinueDelayInputElement);
+  maybeStartAutoContinueStatusCountdown();
+}
+
+function installAutoContinueDelayUiEnhancements() {
+  if (delayUiEnhancementsInstalled) return;
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  delayUiEnhancementsInstalled = true;
+
+  const start = () => {
+    syncAutoContinueDelayUi();
+    const observer = new MutationObserver(syncAutoContinueDelayUi);
+    observer.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    });
+    window.setInterval(syncAutoContinueDelayUi, 400);
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", start, { once: true });
+  } else {
+    start();
+  }
+}
+
+installAutoContinueDelayUiEnhancements();
 
 export function createContentRuntimeState() {
   return {
